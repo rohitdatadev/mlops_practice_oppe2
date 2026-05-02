@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: iris-ml-deployment
+  labels:
+    app: iris-ml-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: iris-ml-api
+  template:
+    metadata:
+      labels:
+        app: iris-ml-api
+    spec:
+      containers:
+      - name: iris-fastapi-app
+        # Note: When deploying to GKE, replace this with your Artifact Registry image URL!
+        image: iris-fastapi-app:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8000
+        env:
+        - name: MLFLOW_TRACKING_URI
+          value: "http://136.114.106.43:5000"
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"

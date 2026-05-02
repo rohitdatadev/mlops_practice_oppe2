@@ -1,0 +1,46 @@
+# 1. Create the firewall rule to allow port 5000 over TCP
+gcloud compute firewall-rules create allow-mlflow-port \
+    --action allow \
+    --rules tcp:5000 \
+    --source-ranges 0.0.0.0/0 \
+    --target-tags mlflow-server-tag
+
+# 2. Attach the rule specifically to your VM instance
+gcloud compute instances add-tags instance-20260502-091652 \
+    --tags mlflow-server-tag \
+    --zone us-central1-a
+
+
+# 1. Update the package list
+sudo apt update
+
+# 2. Install Python, PIP, and Virtual Environment tools
+sudo apt install python3-pip python3-venv -y
+
+# 3. Create and activate a virtual environment
+python3 -m venv mlflow-env
+source mlflow-env/bin/activate
+
+# 4. Install MLflow
+pip install mlflow
+
+
+# 1. Create a persistent virtual terminal called "mlflow-session"
+screen -S mlflow-session
+
+# 2. Start the MLFlow server with public access and artifact serving enabled
+mlflow server \
+    --host 0.0.0.0 \
+    --port 5000 \
+    --serve-artifacts \
+    --cors-allowed-origins="*" \
+    --allowed-hosts="*"
+
+# 3. Detach from the screen so it runs in the background
+# Press: Ctrl+A, then press D
+
+# (Optional) If you ever need to log back in and view the server logs later:
+screen -r mlflow-session
+
+
+MLFLOW_TRACKING_URI=http://136.114.106.43:5000

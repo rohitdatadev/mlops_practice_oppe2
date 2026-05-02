@@ -1,0 +1,145 @@
+name: iris-cd
+
+on:
+  push:
+    branches:
+      - week_6
+      - week_7
+      - main
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  GCP_REGION: asia-south1                           # Change if your region differs
+  GAR_REPOSITORY: iris-api-repo                      # Artifact Registry repository name
+  IMAGE_NAME: iris-api
+
+jobs:
+  build-push-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Checkout ─────────────────────────────────────────────────────
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # ── 2. Authenticate to GCP ──────────────────────────────────────────
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          create_credentials_file: true
+          export_environment_variables: true
+
+      # ── 3. Set up Cloud SDK ─────────────────────────────────────────────
+      - name: Set up Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+
+      # ── 4. Set up Python & pull model from DVC ──────────────────────────
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies (for DVC)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Pull model artifact with DVC
+        run: dvc pull
+
+      # ── 5. Configure Docker for Artifact Registry ───────────────────────
+      - name: Configure Docker authentication
+        run: |
+          gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev --quiet
+
+      # ── 6. Build Docker image ───────────────────────────────────────────
+      - name: Build Docker image
+        run: |
+          docker build -t ${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.GAR_REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
+                       -t ${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.GAR_REPOSITORY }}/${{ env.IMAGE_NAME }}:latest \
+                       .
+
+      # ── 7. Push Docker image ────────────────────────────────────────────
+      - name: Push Docker image to Artifact Registry
+        run: |
+          docker push ${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.GAR_REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          docker push ${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.GAR_REPOSITORY }}/${{ env.IMAGE_NAME }}:latest
+
+      # ── 8. Get GKE credentials ─────────────────────────────────────────
+      - name: Get GKE cluster credentials
+        uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: ${{ secrets.GKE_CLUSTER_NAME }}
+          location: ${{ secrets.GKE_CLUSTER_ZONE }}
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+
+      # ── 9. Deploy to GKE ───────────────────────────────────────────────
+      - name: Deploy to GKE
+        run: |
+          # Apply Kubernetes manifests
+          kubectl apply -f k8s/deployment.yaml
+          kubectl apply -f k8s/service.yaml
+
+          # Update deployment image to the newly pushed SHA-tagged image
+          kubectl set image deployment/iris-api \
+            iris-api=${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.GAR_REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+
+          # Wait for rollout to complete
+          kubectl rollout status deployment/iris-api --timeout=300s
+
+      # ── 10. Apply Horizontal Pod Autoscaler ─────────────────────────────
+      - name: Apply HPA configuration
+        run: |
+          kubectl apply -f k8s/hpa.yaml
+          echo "HPA status:"
+          kubectl get hpa iris-api-hpa
+
+      # ── 11. Get service external IP ────────────────────────────────────
+      - name: Get service external IP
+        id: get-ip
+        run: |
+          echo "Waiting for external IP..."
+          for i in $(seq 1 30); do
+            EXTERNAL_IP=$(kubectl get service iris-api-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+            if [ -n "$EXTERNAL_IP" ]; then
+              echo "External IP: $EXTERNAL_IP"
+              echo "external_ip=$EXTERNAL_IP" >> "$GITHUB_OUTPUT"
+              break
+            fi
+            echo "Attempt $i: IP not yet assigned, waiting 10s..."
+            sleep 10
+          done
+
+          if [ -z "$EXTERNAL_IP" ]; then
+            echo "ERROR: External IP not assigned after 5 minutes"
+            kubectl get service iris-api-service
+            exit 1
+          fi
+
+      # ── 12. Install wrk ────────────────────────────────────────────────
+      - name: Install wrk
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq wrk
+
+      # ── 13. Stress test with wrk ───────────────────────────────────────
+      - name: Run stress test (wrk – 1000 connections, 30s)
+        run: |
+          EXTERNAL_IP="${{ steps.get-ip.outputs.external_ip }}"
+          echo "=== Stress Test: 4 threads, 1000 connections, 30 seconds ==="
+          echo "Target: http://$EXTERNAL_IP/predict"
+          echo ""
+          wrk -t4 -c1000 -d30s -s stress-test/post.lua "http://$EXTERNAL_IP/predict"
+          echo ""
+          echo "=== HPA status after load test ==="
+          kubectl get hpa iris-api-hpa
+          echo ""
+          echo "=== Pod status after load test ==="
+          kubectl get pods -l app=iris-api
