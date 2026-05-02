@@ -24,6 +24,8 @@ spec:
         env:
         - name: MLFLOW_TRACKING_URI
           value: "http://136.114.106.43:5000"
+        - name: MLFLOW_EXPERIMENT_NAME
+          value: "IRIS_Classification_V2"
         resources:
           requests:
             cpu: "100m"
