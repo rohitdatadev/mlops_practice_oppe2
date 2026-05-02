@@ -129,6 +129,27 @@ jobs:
             sleep 10
           done
 
+          echo "API is up and running!"
+          echo ""
+          echo "=== Testing Model Prediction ==="
+          HTTP_STATUS=$(curl -s -o response.json -w "%{http_code}" -X POST "http://$EXTERNAL_IP/predict" \
+               -H "Content-Type: application/json" \
+               -d '{"sepal_length": 5.1, "sepal_width": 3.5, "petal_length": 1.4, "petal_width": 0.2}')
+               
+          cat response.json
+          echo ""
+          echo "HTTP Status: $HTTP_STATUS"
+          
+          if [ "$HTTP_STATUS" -ne 200 ]; then
+            echo "ERROR: Model prediction failed! The API is broken."
+            exit 1
+          fi
+          echo "Smoke test passed!"
+          echo ""
+          
+          echo "Waiting 20 seconds for Google Cloud Load Balancer to fully warm up..."
+          sleep 45
+          
           echo "=== Stress Test: 4 threads, 1000 connections, 30 seconds ==="
           echo "Target: http://$EXTERNAL_IP/predict"
           echo ""
