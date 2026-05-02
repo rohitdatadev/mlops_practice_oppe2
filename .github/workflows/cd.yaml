@@ -118,6 +118,17 @@ jobs:
       - name: Run stress test (wrk – 1000 connections, 30s)
         run: |
           EXTERNAL_IP="${{ steps.get-ip.outputs.external_ip }}"
+          
+          echo "Waiting for API to finish downloading MLFlow model and start up..."
+          for i in $(seq 1 60); do
+            if curl -s -o /dev/null -w "%{http_code}" "http://$EXTERNAL_IP/docs" | grep -q "200"; then
+              echo "API is up and running!"
+              break
+            fi
+            echo "Attempt $i: API not ready, waiting 10s..."
+            sleep 10
+          done
+
           echo "=== Stress Test: 4 threads, 1000 connections, 30 seconds ==="
           echo "Target: http://$EXTERNAL_IP/predict"
           echo ""
